@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+
+import plyvel
+import argparse
+import codecs
+import sys
+
+
+def encode(s): return codecs.decode(s, 'unicode_escape').encode()
+def decode(s): return codecs.encode(s.decode(), 'unicode_escape').decode()
+
+
+class LDBTool:
+  def __init__(self, args):
+    self.args = args
+
+
+  def decode(self, s): return s.decode() if self.args.raw else decode(s)
+
+  def cmd_create(self): pass
+  def cmd_compact(self): self.db.compact_range()
+  def cmd_del(self): self.db.delete(encode(self.args.key))
+  def cmd_set(self): self.db.put(encode(self.args.key), encode(self.args.value))
+
+
+  def cmd_get(self):
+    value = self.db.get(encode(self.args.key))
+    if value is None: sys.exit(1)
+    print(self.decode(value))
+
+
+  def _list(self, **kwargs):
+    if self.args.command != 'list' and self.args.delete:
+      with self.db.write_batch() as wb:
+        for key, value in self.db.iterator(**kwargs):
+          wb.delete(key)
+
+    else:
+      for key, value in self.db.iterator(**kwargs):
+        if self.args.keys: print(self.decode(key))
+        elif self.args.values: print(self.decode(value))
+        else: print(('%s=%s' % (self.decode(key), self.decode(value))))
+
+
+  def cmd_list(self): self._list()
+  def cmd_prefix(self): self._list(prefix = encode(self.args.prefix))
+
+
+  def cmd_range(self):
+    self._list(start = encode(self.args.first), stop = encode(self.args.last),
+      include_stop = True)
+
+
+  def run(self):
+    create = self.args.command == 'create'
+    self.db = plyvel.DB(self.args.db, create_if_missing = create)
+    getattr(self, 'cmd_' + self.args.command.replace('-', '_'))()
+
+
+
+parser = argparse.ArgumentParser('LevelDB command line tool')
+parser.add_argument('db', help = 'Path to the database')
+parser.add_argument('--keys', help = 'Only print the keys, not the values',
+  action = 'store_true')
+parser.add_argument('--values', help = 'Only print the values, not the keys',
+  action = 'store_true')
+parser.add_argument('--raw',  help = 'Print raw keys and values',
+  action = 'store_true')
+
+subparsers = parser.add_subparsers(title = 'subcommands', dest = 'command')
+subparsers.default = 'list'
+
+
+def addsub(cmd):
+  cmd = cmd.split()
+  sp = subparsers.add_parser(cmd[0])
+  for arg in cmd[1:]: sp.add_argument(arg)
+  return sp
+
+
+addsub('create')
+addsub('compact')
+addsub('get key')
+addsub('set key value')
+addsub('del key')
+addsub('list')
+
+for cmd in ['prefix prefix', 'range first last']:
+  sp = addsub(cmd)
+  sp.add_argument('--delete', action = 'store_true',
+    help = 'Delete matching keys')
+
+
+args = parser.parse_args()
+
+LDBTool(args).run()
